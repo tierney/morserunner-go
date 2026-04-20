@@ -1,0 +1,198 @@
+package engine
+
+import (
+	"log"
+	"math"
+	"math/rand"
+	"strings"
+	"time"
+)
+
+type Contest struct {
+	Rate     int
+	Keyer    *Keyer
+	Mixer    *Mixer
+	Stations []*Operator
+	MyCall     string
+	MyWpm      int
+	NoiseLevel float64
+	QRMLevel   float64
+	TestTone   bool
+	Bandwidth  float64
+	LIDs       bool
+	RIT        float64
+	QSBEnabled bool
+	FlutterEnabled bool
+	Log        *Log
+	Rules      ContestRules
+	MyNR       int
+	UserEnv    []float32
+	UserPos    int
+}
+
+func NewContest(rate int) *Contest {
+	return &Contest{
+		Rate:       rate,
+		Keyer:      NewKeyer(rate),
+		Mixer:      NewMixer(rate, 600.0),
+		MyWpm:      30,
+		MyCall:     "W7SST",
+		NoiseLevel: 0.05,
+		Bandwidth:  500.0,
+		Log:        NewLog("contest.log"),
+		Rules:      &WPXRules{},
+		MyNR:       1,
+	}
+}
+
+func (c *Contest) AddStation(call string) {
+	st := NewStation(call, c.Rate)
+	op := NewOperator(st)
+	c.Stations = append(c.Stations, op)
+}
+
+func (c *Contest) NextBlock(blockSize int) []float32 {
+	baseband := make([]complex128, blockSize)
+
+	// Add noise
+	if c.NoiseLevel > 0 {
+		for i := 0; i < blockSize; i++ {
+			baseband[i] = complex((rand.Float64()-0.5)*c.NoiseLevel, (rand.Float64()-0.5)*c.NoiseLevel)
+		}
+	}
+
+	// Add QRM (random carrier tones)
+	if c.QRMLevel > 0 {
+		for i := 0; i < blockSize; i++ {
+			// Simplified QRM: a few wandering carriers
+			baseband[i] += complex(c.QRMLevel*math.Sin(float64(i)*0.01), c.QRMLevel*math.Cos(float64(i)*0.01))
+		}
+	}
+
+	// Test tone (pure carrier at baseband 0Hz, Mixer will shift it to Pitch)
+	if c.TestTone {
+		for i := 0; i < blockSize; i++ {
+			baseband[i] += complex(0.5, 0)
+		}
+	}
+
+	// Add User Sidetone
+	if c.UserEnv != nil {
+		end := c.UserPos + blockSize
+		if end > len(c.UserEnv) {
+			end = len(c.UserEnv)
+		}
+		for i := 0; i < end-c.UserPos; i++ {
+			baseband[i] += complex(float64(c.UserEnv[c.UserPos+i]), 0)
+		}
+		c.UserPos = end
+		if c.UserPos >= len(c.UserEnv) {
+			c.UserEnv = nil
+			c.UserPos = 0
+		}
+	}
+
+	// Mix active stations
+	for _, op := range c.Stations {
+		op.Station.Tick(blockSize)
+		if op.Station.State == StSending {
+			env := op.Station.GetBlock(blockSize)
+			
+			// Apply QSB/Flutter
+			if c.QSBEnabled {
+				op.Station.Qsb.Apply(env)
+			}
+			if c.FlutterEnabled {
+				op.Station.Flutter.Apply(env)
+			}
+
+			for i, e := range env {
+				if e > 0 {
+					// Modulate with BFO offset and RIT
+					// Original MR: Bfo - RitPhase - i * TWO_PI * Ini.Rit / DEFAULTRATE
+					phase := float64(i) * (op.Station.Bfo - 2.0*math.Pi*c.RIT/float64(c.Rate))
+
+					// Apply simple QSB (fading)
+					qsb := 1.0 + 0.5*math.Sin(float64(op.Station.SendPos+i)*0.001)
+
+					baseband[i] += complex(float64(e)*qsb*math.Cos(phase), float64(e)*qsb*math.Sin(phase))
+				}
+			}
+		}
+	}
+
+	// Final mix to audio output
+	return c.Mixer.Mix(baseband)
+}
+
+func (c *Contest) ProcessUserTX(msg string) {
+	msg = strings.ToUpper(strings.TrimSpace(msg))
+	parts := strings.Split(msg, " ")
+	if len(parts) == 0 {
+		return
+	}
+
+	// Simple heuristic for msg type
+	msgType := MsgNone
+	inputCall := ""
+
+	if strings.Contains(msg, "CQ") {
+		msgType = MsgCQ
+	} else if strings.Contains(msg, "TU") {
+		msgType = MsgTU
+	} else if len(parts[0]) > 2 {
+		msgType = MsgHisCall
+		inputCall = parts[0]
+	}
+
+	// Generate sidetone for user transmission
+	morse := c.Keyer.Encode(msg)
+	c.UserEnv = c.Keyer.GenerateEnvelope(morse)
+	c.UserPos = 0
+
+	for _, op := range c.Stations {
+		op.MsgReceived(msgType, inputCall)
+		
+		// If the operator has a reply, start sending it
+		reply := op.GetReply(c.Rules, c.LIDs)
+		if reply != MsgNone {
+			text := op.Station.Call // Default to call for now
+			if reply == MsgNR {
+				text = op.GetExchangeText(c.Rules, c.LIDs)
+			} else if reply == MsgTU {
+				text = "TU"
+			}
+			
+			log.Printf("Station %s responding with: %s", op.Station.Call, text)
+			morse := c.Keyer.Encode(text)
+			op.Station.Envelope = c.Keyer.GenerateEnvelope(morse)
+			op.Station.State = StSending
+			op.Station.SendPos = 0
+		}
+
+		if op.State == OsDone {
+			// Log QSO
+			q := Qso{
+				Timestamp: time.Now(),
+				Call:      op.Station.Call,
+				Points:    c.Rules.Point(Qso{Call: op.Station.Call}),
+				Mult:      c.Rules.Multiplier(Qso{Call: op.Station.Call}),
+			}
+			c.Log.AddQso(q)
+			c.MyNR++
+		}
+	}
+}
+
+func (c *Contest) StartPileup(count int) {
+	calls := []string{"K7ABC", "W6XYZ", "N1ABC", "G4AAA", "JA1YAA", "DL1ZZZ", "F5ABC"}
+	for i := 0; i < count; i++ {
+		call := calls[rand.Intn(len(calls))]
+		c.AddStation(call)
+
+		op := c.Stations[len(c.Stations)-1]
+		morse := c.Keyer.Encode(op.Station.Call)
+		op.Station.Envelope = c.Keyer.GenerateEnvelope(morse)
+		op.Station.State = StSending
+	}
+}
