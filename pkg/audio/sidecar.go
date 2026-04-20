@@ -2,18 +2,19 @@ package audio
 
 import (
 	"bufio"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
 )
 
+// SidecarServer handles two-way IPC via Unix Domain Sockets for AI sidecars.
 type SidecarServer struct {
 	path        string
 	listener    net.Listener
 	clients     map[net.Conn]struct{}
 	clientsLock sync.Mutex
-	CommandChan chan string
+	CommandChan chan string // Channel for receiving commands from AI sidecars
 }
 
 func NewSidecarServer(path string) *SidecarServer {
@@ -36,7 +37,7 @@ func (s *SidecarServer) Start() error {
 	}
 	s.listener = l
 
-	log.Printf("Sidecar UDS server listening on %s", s.path)
+	slog.Info("Sidecar UDS server listening", "path", s.path)
 
 	go func() {
 		for {
@@ -55,7 +56,7 @@ func (s *SidecarServer) addClient(conn net.Conn) {
 	s.clientsLock.Lock()
 	s.clients[conn] = struct{}{}
 	s.clientsLock.Unlock()
-	log.Printf("Sidecar client connected: %s", conn.RemoteAddr())
+	slog.Info("Sidecar client connected", "addr", conn.RemoteAddr())
 
 	// Read loop for incoming commands
 	go func() {
@@ -64,7 +65,7 @@ func (s *SidecarServer) addClient(conn net.Conn) {
 			delete(s.clients, conn)
 			s.clientsLock.Unlock()
 			conn.Close()
-			log.Printf("Sidecar client disconnected: %s", conn.RemoteAddr())
+			slog.Info("Sidecar client disconnected", "addr", conn.RemoteAddr())
 		}()
 
 		scanner := bufio.NewScanner(conn)
@@ -82,7 +83,7 @@ func (s *SidecarServer) Broadcast(data []byte) {
 	for conn := range s.clients {
 		_, err := conn.Write(data)
 		if err != nil {
-			log.Printf("Sidecar client disconnected: %s", conn.RemoteAddr())
+			slog.Error("Sidecar: error broadcasting", "error", err)
 			conn.Close()
 			delete(s.clients, conn)
 		}

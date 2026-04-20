@@ -22,14 +22,14 @@ type MsgType int
 
 const (
 	MsgNone    MsgType = iota
-	MsgCQ             // "CQ DE ..."
-	MsgNR             // Exchange/Serial Number
-	MsgTU             // "TU" or "QRZ"
-	MsgMyCall         // Station calling their own call
-	MsgHisCall        // Station calling the user's call
-	MsgB4             // "B4" or "Already Worked"
-	MsgQm             // "?"
-	MsgAgn            // "AGN"
+	MsgCQ              // "CQ DE ..."
+	MsgNR              // Exchange/Serial Number
+	MsgTU              // "TU" or "QRZ"
+	MsgMyCall          // Station calling their own call
+	MsgHisCall         // Station calling the user's call
+	MsgB4              // "B4" or "Already Worked"
+	MsgQm              // "?"
+	MsgAgn             // "AGN"
 )
 
 // Station represents a single Morse-code station in the simulation.
