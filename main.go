@@ -80,6 +80,7 @@ func main() {
 	}
 
 	c := engine.NewContest(rate)
+	registry := engine.DefaultRegistry()
 
 	// Apply flags to engine
 	c.MyWpm = *wpmFlag
@@ -103,46 +104,15 @@ func main() {
 
 	if webServer != nil {
 		webServer.CmdHandler = func(cmd string, params map[string]interface{}) {
-			switch cmd {
-			case "wpm":
-				if v, ok := params["value"].(float64); ok {
-					wpm := int(v)
-					c.MyWpm = wpm
-					c.Keyer.SetWpm(wpm, wpm)
-					slog.Info("Web: WPM set", "value", wpm)
-				}
-			case "pitch":
-				if v, ok := params["value"].(float64); ok {
-					c.Mixer.Pitch = v
-					slog.Info("Web: Pitch set", "value", v)
-				}
-			case "noise":
-				if v, ok := params["value"].(float64); ok {
-					c.NoiseLevel = v
-					slog.Info("Web: Noise set", "value", v)
-				}
-			case "bw":
-				if v, ok := params["value"].(float64); ok {
-					c.Bandwidth = v
-					c.Mixer.UpdateFilter(v)
-					slog.Info("Web: Bandwidth set", "value", v)
-				}
-			case "pileup":
-				count := 5
-				if v, ok := params["value"].(float64); ok {
-					count = int(v)
-				}
-				c.StartPileup(count)
-				slog.Info("Web: Started pile-up", "count", count)
-			case "tx":
-				if v, ok := params["value"].(string); ok {
-					c.ProcessUserTX(v)
-					slog.Info("Web: TX sent", "msg", v)
-				}
-			case "stop":
-				c.Stations = nil
-				c.TestTone = false
-				slog.Info("Web: Stopped all stations")
+			args := []string{}
+			if v, ok := params["value"]; ok {
+				args = append(args, fmt.Sprintf("%v", v))
+			}
+			
+			if err := registry.ExecuteCommand(c, cmd, args); err != nil {
+				slog.Error("Web: Command execution failed", "cmd", cmd, "error", err)
+			} else {
+				slog.Info("Web: Command executed", "cmd", cmd, "args", args)
 			}
 		}
 		webServer.Start(":8080")
@@ -236,7 +206,9 @@ func main() {
 			case <-ctx.Done():
 				return
 			case cmdLine := <-sidecar.CommandChan:
-				handleCommand(cmdLine, c, cancel)
+				if err := registry.Execute(c, cmdLine); err != nil {
+					slog.Error("Sidecar: Command execution failed", "cmd", cmdLine, "error", err)
+				}
 			}
 		}
 	}()
@@ -267,114 +239,13 @@ func main() {
 			slog.Info("CLI: Context cancelled, exiting loop")
 			return
 		case input := <-inputChan:
-			handleCommand(input, c, cancel)
-		}
-	}
-}
-
-// handleCommand parses and executes a single CLI or IPC command string.
-func handleCommand(input string, c *engine.Contest, cancel context.CancelFunc) {
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return
-	}
-	parts := strings.Split(input, " ")
-	cmd := strings.ToLower(parts[0])
-
-	switch cmd {
-	case "exit", "quit":
-		cancel()
-	case "wpm":
-		if len(parts) > 1 {
-			wpm, _ := strconv.Atoi(parts[1])
-			if wpm >= 15 && wpm <= 50 {
-				c.MyWpm = wpm
-				c.Keyer.SetWpm(wpm, wpm)
-				slog.Info("WPM set", "value", wpm)
+			if input == "exit" || input == "quit" {
+				cancel()
+				return
+			}
+			if err := registry.Execute(c, input); err != nil {
+				slog.Error("CLI: Command failed", "error", err)
 			}
 		}
-	case "pileup":
-		count := 5
-		if len(parts) > 1 {
-			count, _ = strconv.Atoi(parts[1])
-		}
-		c.StartPileup(count)
-		slog.Info("Started pile-up", "count", count)
-	case "noise":
-		if len(parts) > 1 {
-			level, _ := strconv.ParseFloat(parts[1], 64)
-			c.NoiseLevel = level
-			slog.Info("Noise level set", "value", level)
-		}
-	case "qrm":
-		if len(parts) > 1 {
-			level, _ := strconv.ParseFloat(parts[1], 64)
-			c.QRMLevel = level
-			slog.Info("QRM level set", "value", level)
-		}
-	case "test":
-		if len(parts) > 1 {
-			c.TestTone = (parts[1] == "on")
-			slog.Info("Test tone updated", "enabled", c.TestTone)
-		}
-	case "pitch":
-		if len(parts) > 1 {
-			pitch, _ := strconv.ParseFloat(parts[1], 64)
-			c.Mixer.Pitch = pitch
-			slog.Info("Pitch set", "value", pitch)
-		}
-	case "bw":
-		if len(parts) > 1 {
-			bw, _ := strconv.ParseFloat(parts[1], 64)
-			c.Bandwidth = bw
-			c.Mixer.UpdateFilter(bw)
-			slog.Info("Bandwidth set", "value", bw)
-		}
-	case "rit":
-		if len(parts) > 1 {
-			rit, _ := strconv.ParseFloat(parts[1], 64)
-			c.RIT = rit
-			slog.Info("RIT set", "value", rit)
-		}
-	case "tx":
-		if len(parts) > 1 {
-			msg := strings.Join(parts[1:], " ")
-			c.ProcessUserTX(msg)
-			slog.Info("TX sent", "msg", msg)
-		}
-	case "score":
-		slog.Info("Current Stats",
-			"qsos", len(c.Log.Qsos),
-			"mults", c.Log.TotalMults(),
-			"points", c.Log.TotalPoints(),
-			"score", c.Log.Score())
-	case "lids":
-		if len(parts) > 1 {
-			c.LIDs = (parts[1] == "on")
-			slog.Info("LIDs mode updated", "enabled", c.LIDs)
-		}
-	case "pota":
-		park := "K-1234"
-		if len(parts) > 1 {
-			park = parts[1]
-		}
-		c.Rules = &engine.POTARules{ParkID: park}
-		slog.Info("Switched to POTA mode", "park", park)
-	case "qsb":
-		if len(parts) > 1 {
-			c.QSBEnabled = (parts[1] == "on")
-			slog.Info("QSB (Fading) updated", "enabled", c.QSBEnabled)
-		}
-	case "flutter":
-		if len(parts) > 1 {
-			c.FlutterEnabled = (parts[1] == "on")
-			slog.Info("Flutter (Aurora) updated", "enabled", c.FlutterEnabled)
-		}
-	case "stop":
-		c.Stations = nil
-		c.TestTone = false
-		slog.Info("Stopped all stations and test tone")
-	default:
-		slog.Warn("Unknown command", "input", input)
 	}
 }
