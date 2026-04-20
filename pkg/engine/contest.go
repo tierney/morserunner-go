@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -138,9 +139,11 @@ func (c *Contest) ProcessUserTX(msg string) {
 
 	if strings.Contains(msg, "CQ") {
 		msgType = MsgCQ
+		fmt.Println("CQ detected! Stations are responding...")
 	} else if strings.Contains(msg, "TU") {
 		msgType = MsgTU
-	} else if len(parts[0]) > 2 {
+	} else if len(parts[0]) >= 1 {
+		// Treat any non-command as a potential callsign
 		msgType = MsgHisCall
 		inputCall = parts[0]
 	}
@@ -150,20 +153,43 @@ func (c *Contest) ProcessUserTX(msg string) {
 	c.UserEnv = c.Keyer.GenerateEnvelope(morse)
 	c.UserPos = 0
 
+	// Pass 1: Find best confidence
+	maxConf := 0
 	for _, op := range c.Stations {
-		op.MsgReceived(msgType, inputCall)
+		conf := Confidence(op.Station.Call, inputCall)
+		if conf > maxConf {
+			maxConf = conf
+		}
+	}
+
+	// Pass 2: Process and reply only if we are the best candidate
+	for _, op := range c.Stations {
+		conf := Confidence(op.Station.Call, inputCall)
 		
-		// If the operator has a reply, start sending it
+		// If we are significantly worse than the best match, ignore the message
+		effectiveMsg := msgType
+		if conf < maxConf && maxConf > 50 {
+			effectiveMsg = MsgNone
+		}
+
+		op.MsgReceived(effectiveMsg, inputCall)
+		
 		reply := op.GetReply(c.Rules, c.LIDs)
-		if reply != MsgNone {
-			text := op.Station.Call // Default to call for now
-			if reply == MsgNR {
-				text = op.GetExchangeText(c.Rules, c.LIDs)
+		
+		// Logic for responding:
+		// 1. If it's a CQ, everyone in the pile-up responds.
+		// 2. If it's a callsign, only the "Best Match" responds.
+		canReply := (msgType == MsgCQ) || (conf >= maxConf && conf > 30)
+
+		if reply != MsgNone && canReply {
+			text := op.GetExchangeText(c.Rules, c.LIDs)
+			if reply == MsgMyCall {
+				text = op.Station.Call
 			} else if reply == MsgTU {
 				text = "TU"
 			}
 			
-			log.Printf("Station %s responding with: %s", op.Station.Call, text)
+			log.Printf("Station %s (Conf: %d%%) responding with: %s", op.Station.Call, conf, text)
 			morse := c.Keyer.Encode(text)
 			op.Station.Envelope = c.Keyer.GenerateEnvelope(morse)
 			op.Station.State = StSending

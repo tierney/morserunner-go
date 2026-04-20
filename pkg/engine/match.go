@@ -56,11 +56,19 @@ func min(a, b, c int) int {
 	return c
 }
 
-// Confidence returns a value from 0 to 100 representing how close s2 matches s1.
+// Confidence returns a value from 0 to 100 representing how close input matches target.
 func Confidence(target, input string) int {
-	if len(target) == 0 {
+	if len(target) == 0 || len(input) == 0 {
 		return 0
 	}
+	target = strings.ToUpper(target)
+	input = strings.ToUpper(input)
+
+	// Direct substring match (important for "K7" matching "K7ABC")
+	if strings.Contains(target, input) {
+		return 100 * len(input) / len(target)
+	}
+
 	dist := LevenshteinDistance(target, input)
 	if dist >= len(target) {
 		return 0

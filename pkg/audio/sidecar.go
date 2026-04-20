@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"bufio"
 	"log"
 	"net"
 	"os"
@@ -12,12 +13,14 @@ type SidecarServer struct {
 	listener    net.Listener
 	clients     map[net.Conn]struct{}
 	clientsLock sync.Mutex
+	CommandChan chan string
 }
 
 func NewSidecarServer(path string) *SidecarServer {
 	return &SidecarServer{
-		path:    path,
-		clients: make(map[net.Conn]struct{}),
+		path:        path,
+		clients:     make(map[net.Conn]struct{}),
+		CommandChan: make(chan string, 100),
 	}
 }
 
@@ -50,9 +53,26 @@ func (s *SidecarServer) Start() error {
 
 func (s *SidecarServer) addClient(conn net.Conn) {
 	s.clientsLock.Lock()
-	defer s.clientsLock.Unlock()
 	s.clients[conn] = struct{}{}
+	s.clientsLock.Unlock()
 	log.Printf("Sidecar client connected: %s", conn.RemoteAddr())
+
+	// Read loop for incoming commands
+	go func() {
+		defer func() {
+			s.clientsLock.Lock()
+			delete(s.clients, conn)
+			s.clientsLock.Unlock()
+			conn.Close()
+			log.Printf("Sidecar client disconnected: %s", conn.RemoteAddr())
+		}()
+
+		scanner := bufio.NewScanner(conn)
+		for scanner.Scan() {
+			cmd := scanner.Text()
+			s.CommandChan <- cmd
+		}
+	}()
 }
 
 func (s *SidecarServer) Broadcast(data []byte) {

@@ -12,9 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tierney/morserunner-go/pkg/audio"
 	"github.com/tierney/morserunner-go/pkg/engine"
+	"github.com/tierney/morserunner-go/pkg/web"
 )
 
 func main() {
@@ -37,6 +39,7 @@ func main() {
 	parkFlag := flag.String("park", "K-1234", "Park ID for POTA")
 	socketFlag := flag.String("socket", "/tmp/morserunner.sock", "IPC socket path")
 	headlessFlag := flag.Bool("headless", false, "Run without interactive REPL")
+	webFlag := flag.Bool("web", false, "Enable web dashboard")
 
 	flag.Parse()
 
@@ -51,6 +54,11 @@ func main() {
 		log.Printf("Failed to start sidecar: %v", err)
 	}
 	defer sidecar.Close()
+
+	var webServer *web.Server
+	if *webFlag {
+		webServer = web.NewServer()
+	}
 
 	c := engine.NewContest(rate)
 	
@@ -72,6 +80,53 @@ func main() {
 		c.Rules = &engine.ARRLDXRules{}
 	default:
 		c.Rules = &engine.WPXRules{}
+	}
+
+	if webServer != nil {
+		webServer.CmdHandler = func(cmd string, params map[string]interface{}) {
+			switch cmd {
+			case "wpm":
+				if v, ok := params["value"].(float64); ok {
+					wpm := int(v)
+					c.MyWpm = wpm
+					c.Keyer.SetWpm(wpm, wpm)
+					fmt.Printf("Web: WPM set to %d\n", wpm)
+				}
+			case "pitch":
+				if v, ok := params["value"].(float64); ok {
+					c.Mixer.Pitch = v
+					fmt.Printf("Web: Pitch set to %.0f Hz\n", v)
+				}
+			case "noise":
+				if v, ok := params["value"].(float64); ok {
+					c.NoiseLevel = v
+					fmt.Printf("Web: Noise set to %.2f\n", v)
+				}
+			case "bw":
+				if v, ok := params["value"].(float64); ok {
+					c.Bandwidth = v
+					c.Mixer.UpdateFilter(v)
+					fmt.Printf("Web: Bandwidth set to %.0f Hz\n", v)
+				}
+			case "pileup":
+				count := 5
+				if v, ok := params["value"].(float64); ok {
+					count = int(v)
+				}
+				c.StartPileup(count)
+				fmt.Printf("Web: Started pile-up with %d stations\n", count)
+			case "tx":
+				if v, ok := params["value"].(string); ok {
+					c.ProcessUserTX(v)
+					fmt.Printf("Web: TX -> %s\n", v)
+				}
+			case "stop":
+				c.Stations = nil
+				c.TestTone = false
+				fmt.Println("Web: Stopped all stations")
+			}
+		}
+		webServer.Start(":8080")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -99,15 +154,66 @@ func main() {
 				pcm := audio.Float32ToS16(samples)
 				pw.Write(pcm)
 				sidecar.Broadcast(pcm)
+				if webServer != nil {
+					webServer.BroadcastAudio(pcm)
+				}
 			}
 		}
 	}()
+
+	// State broadcast loop
+	if webServer != nil {
+		go func() {
+			ticker := time.NewTicker(200 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					state := map[string]interface{}{
+						"type":  "state",
+						"wpm":   c.MyWpm,
+						"pitch": c.Mixer.Pitch,
+						"noise": c.NoiseLevel,
+						"bw":    c.Bandwidth,
+						"score": c.Log.Score(),
+						"qsos":  len(c.Log.Qsos),
+						"log":   c.Log.Qsos,
+					}
+					
+					stations := []map[string]interface{}{}
+					for _, op := range c.Stations {
+						stations = append(stations, map[string]interface{}{
+							"call": op.Station.Call,
+							"bfo":  op.Station.Bfo,
+							"state": op.Station.State,
+						})
+					}
+					state["stations"] = stations
+					webServer.BroadcastJSON(state)
+				}
+			}
+		}()
+	}
 
 	// Audio output loop
 	go func() {
 		err = driver.Play(ctx, pr)
 		if err != nil && err != context.Canceled {
 			log.Fatal(err)
+		}
+	}()
+
+	// Sidecar command loop
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case cmdLine := <-sidecar.CommandChan:
+				handleCommand(cmdLine, c, cancel)
+			}
 		}
 	}()
 
@@ -128,106 +234,109 @@ func main() {
 		if !scanner.Scan() {
 			break
 		}
-		input := scanner.Text()
-		parts := strings.Split(input, " ")
-		if len(parts) == 0 {
-			continue
-		}
+		handleCommand(scanner.Text(), c, cancel)
+	}
+}
 
-		cmd := strings.ToLower(parts[0])
-		switch cmd {
-		case "exit", "quit":
-			cancel()
-			return
-		case "wpm":
-			if len(parts) > 1 {
-				wpm, _ := strconv.Atoi(parts[1])
-				if wpm >= 15 && wpm <= 50 {
-					c.MyWpm = wpm
-					c.Keyer.SetWpm(wpm, wpm)
-					fmt.Printf("WPM set to %d\n", wpm)
-				}
+func handleCommand(input string, c *engine.Contest, cancel context.CancelFunc) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return
+	}
+	parts := strings.Split(input, " ")
+	cmd := strings.ToLower(parts[0])
+
+	switch cmd {
+	case "exit", "quit":
+		cancel()
+	case "wpm":
+		if len(parts) > 1 {
+			wpm, _ := strconv.Atoi(parts[1])
+			if wpm >= 15 && wpm <= 50 {
+				c.MyWpm = wpm
+				c.Keyer.SetWpm(wpm, wpm)
+				fmt.Printf("WPM set to %d\n", wpm)
 			}
-		case "pileup":
-			count := 5
-			if len(parts) > 1 {
-				count, _ = strconv.Atoi(parts[1])
-			}
-			c.StartPileup(count)
-			fmt.Printf("Started pile-up with %d stations\n", count)
-		case "noise":
-			if len(parts) > 1 {
-				level, _ := strconv.ParseFloat(parts[1], 64)
-				c.NoiseLevel = level
-				fmt.Printf("Noise level set to %.2f\n", level)
-			}
-		case "qrm":
-			if len(parts) > 1 {
-				level, _ := strconv.ParseFloat(parts[1], 64)
-				c.QRMLevel = level
-				fmt.Printf("QRM level set to %.2f\n", level)
-			}
-		case "test":
-			if len(parts) > 1 {
-				c.TestTone = (parts[1] == "on")
-				fmt.Printf("Test tone: %v\n", c.TestTone)
-			}
-		case "pitch":
-			if len(parts) > 1 {
-				pitch, _ := strconv.ParseFloat(parts[1], 64)
-				c.Mixer.Pitch = pitch
-				fmt.Printf("Pitch set to %.0f Hz\n", pitch)
-			}
-		case "bw":
-			if len(parts) > 1 {
-				bw, _ := strconv.ParseFloat(parts[1], 64)
-				c.Bandwidth = bw
-				c.Mixer.UpdateFilter(bw)
-				fmt.Printf("Bandwidth set to %.0f Hz\n", bw)
-			}
-		case "rit":
-			if len(parts) > 1 {
-				rit, _ := strconv.ParseFloat(parts[1], 64)
-				c.RIT = rit
-				fmt.Printf("RIT set to %.0f Hz\n", rit)
-			}
-		case "tx":
-			if len(parts) > 1 {
-				msg := strings.Join(parts[1:], " ")
-				c.ProcessUserTX(msg)
-				fmt.Printf("TX: %s\n", msg)
-			}
-		case "score":
-			fmt.Printf("QSOs: %d | Mults: %d | Points: %d | Total Score: %d\n",
-				len(c.Log.Qsos), c.Log.TotalMults(), c.Log.TotalPoints(), c.Log.Score())
-		case "lids":
-			if len(parts) > 1 {
-				c.LIDs = (parts[1] == "on")
-				fmt.Printf("LIDs mode: %v\n", c.LIDs)
-			}
-		case "pota":
-			park := "K-1234"
-			if len(parts) > 1 {
-				park = parts[1]
-			}
-			c.Rules = &engine.POTARules{ParkID: park}
-			fmt.Printf("Switched to POTA mode. Park: %s\n", park)
-		case "qsb":
-			if len(parts) > 1 {
-				c.QSBEnabled = (parts[1] == "on")
-				fmt.Printf("QSB (Fading): %v\n", c.QSBEnabled)
-			}
-		case "flutter":
-			if len(parts) > 1 {
-				c.FlutterEnabled = (parts[1] == "on")
-				fmt.Printf("Flutter (Aurora): %v\n", c.FlutterEnabled)
-			}
-		case "stop":
-			c.Stations = nil
-			c.TestTone = false
-			fmt.Println("Stopped all stations and test tone.")
-		default:
-			fmt.Println("Unknown command.")
 		}
+	case "pileup":
+		count := 5
+		if len(parts) > 1 {
+			count, _ = strconv.Atoi(parts[1])
+		}
+		c.StartPileup(count)
+		fmt.Printf("Started pile-up with %d stations\n", count)
+	case "noise":
+		if len(parts) > 1 {
+			level, _ := strconv.ParseFloat(parts[1], 64)
+			c.NoiseLevel = level
+			fmt.Printf("Noise level set to %.2f\n", level)
+		}
+	case "qrm":
+		if len(parts) > 1 {
+			level, _ := strconv.ParseFloat(parts[1], 64)
+			c.QRMLevel = level
+			fmt.Printf("QRM level set to %.2f\n", level)
+		}
+	case "test":
+		if len(parts) > 1 {
+			c.TestTone = (parts[1] == "on")
+			fmt.Printf("Test tone: %v\n", c.TestTone)
+		}
+	case "pitch":
+		if len(parts) > 1 {
+			pitch, _ := strconv.ParseFloat(parts[1], 64)
+			c.Mixer.Pitch = pitch
+			fmt.Printf("Pitch set to %.0f Hz\n", pitch)
+		}
+	case "bw":
+		if len(parts) > 1 {
+			bw, _ := strconv.ParseFloat(parts[1], 64)
+			c.Bandwidth = bw
+			c.Mixer.UpdateFilter(bw)
+			fmt.Printf("Bandwidth set to %.0f Hz\n", bw)
+		}
+	case "rit":
+		if len(parts) > 1 {
+			rit, _ := strconv.ParseFloat(parts[1], 64)
+			c.RIT = rit
+			fmt.Printf("RIT set to %.0f Hz\n", rit)
+		}
+	case "tx":
+		if len(parts) > 1 {
+			msg := strings.Join(parts[1:], " ")
+			c.ProcessUserTX(msg)
+			fmt.Printf("TX: %s\n", msg)
+		}
+	case "score":
+		fmt.Printf("QSOs: %d | Mults: %d | Points: %d | Total Score: %d\n",
+			len(c.Log.Qsos), c.Log.TotalMults(), c.Log.TotalPoints(), c.Log.Score())
+	case "lids":
+		if len(parts) > 1 {
+			c.LIDs = (parts[1] == "on")
+			fmt.Printf("LIDs mode: %v\n", c.LIDs)
+		}
+	case "pota":
+		park := "K-1234"
+		if len(parts) > 1 {
+			park = parts[1]
+		}
+		c.Rules = &engine.POTARules{ParkID: park}
+		fmt.Printf("Switched to POTA mode. Park: %s\n", park)
+	case "qsb":
+		if len(parts) > 1 {
+			c.QSBEnabled = (parts[1] == "on")
+			fmt.Printf("QSB (Fading): %v\n", c.QSBEnabled)
+		}
+	case "flutter":
+		if len(parts) > 1 {
+			c.FlutterEnabled = (parts[1] == "on")
+			fmt.Printf("Flutter (Aurora): %v\n", c.FlutterEnabled)
+		}
+	case "stop":
+		c.Stations = nil
+		c.TestTone = false
+		fmt.Println("Stopped all stations and test tone.")
+	default:
+		fmt.Println("Unknown command.")
 	}
 }

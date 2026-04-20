@@ -42,6 +42,19 @@ The engine supports command-line flags for easy integration with AI scripts or a
 ## CLI Commands (Interactive)
 If running without `-headless`, use the following commands at the `> ` prompt:
 
+### Advanced AI Realism
+- **Competitive Matching**: Stations only reply if they are the "Best Match" for your transmission. Partial matches will defer to better ones.
+- **CQ Support**: Stations intelligently respond to `CQ` calls.
+- **Operator Imperfections (LIDs)**: Enable simulated operator errors and cut numbers.
+- **DSP Modulators**: Native implementation of QSB (fading) and Flutter (Aurora) from original Delphi source.
+
+## Testing
+The engine includes a full test suite for timing and logic:
+```bash
+go test ./pkg/engine/...
+```
+Tested for **50 WPM** integrity and sub-sample Morse timing accuracy.
+
 ### Competition Logic
 - `pileup <n>`: Start a pile-up with `<n>` stations. Stations will loop their callsigns every 3 seconds.
 - `wpm <n>`: Set the CW speed (15-50 WPM).
