@@ -9,28 +9,30 @@ import (
 	"time"
 )
 
+// Contest represents the main simulation engine, managing stations, audio mixing, and rules.
 type Contest struct {
-	Rate     int
-	Keyer    *Keyer
-	Mixer    *Mixer
-	Stations []*Operator
-	MyCall     string
-	MyWpm      int
-	NoiseLevel float64
-	QRMLevel   float64
-	TestTone   bool
-	Bandwidth  float64
-	LIDs       bool
-	RIT        float64
-	QSBEnabled bool
+	Rate           int
+	Keyer          *Keyer
+	Mixer          *Mixer
+	Stations       []*Operator
+	MyCall         string
+	MyWpm          int
+	NoiseLevel     float64
+	QRMLevel       float64
+	TestTone       bool
+	Bandwidth      float64
+	LIDs           bool
+	RIT            float64
+	QSBEnabled     bool
 	FlutterEnabled bool
-	Log        *Log
-	Rules      ContestRules
-	MyNR       int
-	UserEnv    []float32
-	UserPos    int
+	Log            *Log
+	Rules          ContestRules
+	MyNR           int
+	UserEnv        []float32
+	UserPos        int
 }
 
+// NewContest initializes a new competition environment with default settings.
 func NewContest(rate int) *Contest {
 	return &Contest{
 		Rate:       rate,
@@ -98,7 +100,7 @@ func (c *Contest) NextBlock(blockSize int) []float32 {
 		op.Station.Tick(blockSize)
 		if op.Station.State == StSending {
 			env := op.Station.GetBlock(blockSize)
-			
+
 			// Apply QSB/Flutter
 			if c.QSBEnabled {
 				op.Station.Qsb.Apply(env)
@@ -110,16 +112,25 @@ func (c *Contest) NextBlock(blockSize int) []float32 {
 			for i, e := range env {
 				if e > 0 {
 					// Modulate with BFO offset and RIT
-					// Original MR: Bfo - RitPhase - i * TWO_PI * Ini.Rit / DEFAULTRATE
 					phase := float64(i) * (op.Station.Bfo - 2.0*math.Pi*c.RIT/float64(c.Rate))
-
-					// Apply simple QSB (fading)
-					qsb := 1.0 + 0.5*math.Sin(float64(op.Station.SendPos+i)*0.001)
-
-					baseband[i] += complex(float64(e)*qsb*math.Cos(phase), float64(e)*qsb*math.Sin(phase))
+					baseband[i] += complex(float64(e)*math.Cos(phase), float64(e)*math.Sin(phase))
 				}
 			}
+		} else if op.State == OsNeedQso && rand.Float64() < 0.0005 {
+			// Tail-Ending Nuance: Inactive stations might jump in randomly
+			morse := c.Keyer.Encode(op.Station.Call)
+			op.Station.Envelope = c.Keyer.GenerateEnvelope(morse)
+			op.Station.State = StSending
+			op.Station.SendPos = 0
 		}
+	}
+
+	// Add Noise (scaled by Bandwidth)
+	bwScale := math.Sqrt(c.Mixer.Bandwidth / 3000.0)
+	noiseLvl := c.NoiseLevel * bwScale
+	for i := range baseband {
+		n := (rand.Float64()*2 - 1) * noiseLvl
+		baseband[i] += complex(n, 0)
 	}
 
 	// Final mix to audio output
@@ -165,7 +176,7 @@ func (c *Contest) ProcessUserTX(msg string) {
 	// Pass 2: Process and reply only if we are the best candidate
 	for _, op := range c.Stations {
 		conf := Confidence(op.Station.Call, inputCall)
-		
+
 		// If we are significantly worse than the best match, ignore the message
 		effectiveMsg := msgType
 		if conf < maxConf && maxConf > 50 {
@@ -173,9 +184,9 @@ func (c *Contest) ProcessUserTX(msg string) {
 		}
 
 		op.MsgReceived(effectiveMsg, inputCall)
-		
+
 		reply := op.GetReply(c.Rules, c.LIDs)
-		
+
 		// Logic for responding:
 		// 1. If it's a CQ, everyone in the pile-up responds.
 		// 2. If it's a callsign, only the "Best Match" responds.
@@ -188,7 +199,7 @@ func (c *Contest) ProcessUserTX(msg string) {
 			} else if reply == MsgTU {
 				text = "TU"
 			}
-			
+
 			log.Printf("Station %s (Conf: %d%%) responding with: %s", op.Station.Call, conf, text)
 			morse := c.Keyer.Encode(text)
 			op.Station.Envelope = c.Keyer.GenerateEnvelope(morse)

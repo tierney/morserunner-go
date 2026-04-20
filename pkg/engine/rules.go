@@ -5,7 +5,7 @@ type ContestType string
 const (
 	ContestWPX    ContestType = "WPX"
 	ContestARRLDX ContestType = "ARRLDX"
-	ContestPOTA    ContestType = "POTA"
+	ContestPOTA   ContestType = "POTA"
 )
 
 type ContestRules interface {

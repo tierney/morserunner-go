@@ -1,8 +1,9 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -16,11 +17,13 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// Client represents a connected web dashboard user.
 type Client struct {
 	conn *websocket.Conn
 	send chan []byte
 }
 
+// Server handles the web-based dashboard and audio streaming.
 type Server struct {
 	clients    map[*Client]bool
 	broadcast  chan []byte
@@ -28,6 +31,7 @@ type Server struct {
 	unregister chan *Client
 	lock       sync.Mutex
 	CmdHandler func(cmd string, params map[string]interface{})
+	httpServer *http.Server
 }
 
 func NewServer() *Server {
@@ -75,7 +79,7 @@ func (s *Server) BroadcastAudio(pcm []byte) {
 	for client := range s.clients {
 		err := client.conn.WriteMessage(websocket.BinaryMessage, pcm)
 		if err != nil {
-			log.Printf("error broadcasting audio: %v", err)
+			slog.Error("Web: error broadcasting audio", "error", err)
 		}
 	}
 }
@@ -90,7 +94,7 @@ func (s *Server) BroadcastJSON(data interface{}) {
 	for client := range s.clients {
 		err := client.conn.WriteMessage(websocket.TextMessage, msg)
 		if err != nil {
-			log.Printf("error broadcasting json: %v", err)
+			slog.Error("Web: error broadcasting json", "error", err)
 		}
 	}
 }
@@ -103,25 +107,41 @@ func (s *Server) Start(addr string) {
 	r.GET("/ws", func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
-			log.Printf("Web: WebSocket upgrade failed: %v", err)
+			slog.Error("Web: WebSocket upgrade failed", "error", err)
 			return
 		}
 		client := &Client{conn: conn, send: make(chan []byte, 256)}
 		s.register <- client
-		log.Printf("Web: Client connected from %s", conn.RemoteAddr())
+		slog.Info("Web: Client connected", "addr", conn.RemoteAddr())
 
 		go s.writePump(client)
 		go s.readPump(client)
 	})
 
-	// Serve static files without conflicting with /ws
 	r.Static("/assets", "./web/dist/assets")
 	r.StaticFile("/", "./web/dist/index.html")
 	r.StaticFile("/vite.svg", "./web/dist/vite.svg")
 	r.StaticFile("/audio-processor.js", "./web/dist/audio-processor.js")
 
-	log.Printf("Web server starting on %s", addr)
-	go r.Run(addr)
+	s.httpServer = &http.Server{
+		Addr:    addr,
+		Handler: r,
+	}
+
+	slog.Info("Web: server starting", "addr", addr)
+	go func() {
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("Web: server error", "error", err)
+		}
+	}()
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	slog.Info("Web: shutting down web server")
+	if s.httpServer != nil {
+		return s.httpServer.Shutdown(ctx)
+	}
+	return nil
 }
 
 func (s *Server) writePump(c *Client) {
@@ -151,7 +171,7 @@ func (s *Server) readPump(c *Client) {
 		if err != nil {
 			break
 		}
-		
+
 		var payload struct {
 			Cmd    string                 `json:"cmd"`
 			Params map[string]interface{} `json:"params"`

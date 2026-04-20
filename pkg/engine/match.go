@@ -8,7 +8,7 @@ import (
 func LevenshteinDistance(s1, s2 string) int {
 	s1 = strings.ToUpper(s1)
 	s2 = strings.ToUpper(s2)
-	
+
 	if len(s1) == 0 {
 		return len(s2)
 	}

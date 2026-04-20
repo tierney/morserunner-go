@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -20,13 +21,33 @@ import (
 )
 
 func main() {
-	fmt.Println("MorseRunner-Go Engine Initializing...")
-	fmt.Println("Target: macOS (M4 Pro) / Linux")
+	headlessFlag := flag.Bool("headless", false, "Run without interactive REPL")
+	webFlag := flag.Bool("web", false, "Enable web dashboard")
+	jsonLogs := flag.Bool("json-logs", false, "Output logs in JSON format")
+	logFile := flag.String("log-file", "morserunner.log", "Path to log file")
+
+	flag.Parse()
+
+	// Initialize structured logging
+	f, err := os.OpenFile(*logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+	defer f.Close()
+
+	var logHandler slog.Handler
+	if *jsonLogs {
+		logHandler = slog.NewJSONHandler(io.MultiWriter(os.Stderr, f), nil)
+	} else {
+		logHandler = slog.NewTextHandler(io.MultiWriter(os.Stderr, f), nil)
+	}
+	slog.SetDefault(slog.New(logHandler))
+
+	slog.Info("MorseRunner-Go Engine Initializing", "target", "macOS (M4 Pro) / Linux")
 
 	rate := 16000
 	blockSize := 512
 
-	// AI-friendly CLI flags
 	wpmFlag := flag.Int("wpm", 30, "CW speed (15-50)")
 	pitchFlag := flag.Float64("pitch", 600.0, "Sidetone pitch (Hz)")
 	bwFlag := flag.Float64("bw", 500.0, "Filter bandwidth (Hz)")
@@ -38,8 +59,6 @@ func main() {
 	contestFlag := flag.String("contest", "WPX", "Contest type (WPX, ARRLDX, POTA)")
 	parkFlag := flag.String("park", "K-1234", "Park ID for POTA")
 	socketFlag := flag.String("socket", "/tmp/morserunner.sock", "IPC socket path")
-	headlessFlag := flag.Bool("headless", false, "Run without interactive REPL")
-	webFlag := flag.Bool("web", false, "Enable web dashboard")
 
 	flag.Parse()
 
@@ -61,7 +80,7 @@ func main() {
 	}
 
 	c := engine.NewContest(rate)
-	
+
 	// Apply flags to engine
 	c.MyWpm = *wpmFlag
 	c.Keyer.SetWpm(*wpmFlag, *wpmFlag)
@@ -72,7 +91,7 @@ func main() {
 	c.QSBEnabled = *qsbFlag
 	c.FlutterEnabled = *flutterFlag
 	c.LIDs = *lidsFlag
-	
+
 	switch strings.ToUpper(*contestFlag) {
 	case "POTA":
 		c.Rules = &engine.POTARules{ParkID: *parkFlag}
@@ -90,23 +109,23 @@ func main() {
 					wpm := int(v)
 					c.MyWpm = wpm
 					c.Keyer.SetWpm(wpm, wpm)
-					fmt.Printf("Web: WPM set to %d\n", wpm)
+					slog.Info("Web: WPM set", "value", wpm)
 				}
 			case "pitch":
 				if v, ok := params["value"].(float64); ok {
 					c.Mixer.Pitch = v
-					fmt.Printf("Web: Pitch set to %.0f Hz\n", v)
+					slog.Info("Web: Pitch set", "value", v)
 				}
 			case "noise":
 				if v, ok := params["value"].(float64); ok {
 					c.NoiseLevel = v
-					fmt.Printf("Web: Noise set to %.2f\n", v)
+					slog.Info("Web: Noise set", "value", v)
 				}
 			case "bw":
 				if v, ok := params["value"].(float64); ok {
 					c.Bandwidth = v
 					c.Mixer.UpdateFilter(v)
-					fmt.Printf("Web: Bandwidth set to %.0f Hz\n", v)
+					slog.Info("Web: Bandwidth set", "value", v)
 				}
 			case "pileup":
 				count := 5
@@ -114,19 +133,24 @@ func main() {
 					count = int(v)
 				}
 				c.StartPileup(count)
-				fmt.Printf("Web: Started pile-up with %d stations\n", count)
+				slog.Info("Web: Started pile-up", "count", count)
 			case "tx":
 				if v, ok := params["value"].(string); ok {
 					c.ProcessUserTX(v)
-					fmt.Printf("Web: TX -> %s\n", v)
+					slog.Info("Web: TX sent", "msg", v)
 				}
 			case "stop":
 				c.Stations = nil
 				c.TestTone = false
-				fmt.Println("Web: Stopped all stations")
+				slog.Info("Web: Stopped all stations")
 			}
 		}
 		webServer.Start(":8080")
+		defer func() {
+			sdCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			webServer.Shutdown(sdCtx)
+		}()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -136,8 +160,8 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		<-sigChan
-		fmt.Println("\nShutting down...")
+		sig := <-sigChan
+		slog.Info("Shutdown signal received", "signal", sig)
 		cancel()
 	}()
 
@@ -181,12 +205,12 @@ func main() {
 						"qsos":  len(c.Log.Qsos),
 						"log":   c.Log.Qsos,
 					}
-					
+
 					stations := []map[string]interface{}{}
 					for _, op := range c.Stations {
 						stations = append(stations, map[string]interface{}{
-							"call": op.Station.Call,
-							"bfo":  op.Station.Bfo,
+							"call":  op.Station.Call,
+							"bfo":   op.Station.Bfo,
 							"state": op.Station.State,
 						})
 					}
@@ -217,27 +241,38 @@ func main() {
 		}
 	}()
 
-	fmt.Println("Engine running.")
-	
+	slog.Info("Engine running")
+
 	if *headlessFlag {
-		fmt.Println("Headless mode active. Waiting for signals...")
+		slog.Info("Headless mode active. Waiting for signals...")
 		<-ctx.Done()
 		return
 	}
 
 	fmt.Println("Commands: wpm <n>, pileup <n>, stop, exit")
 
-	// CLI Loop
-	scanner := bufio.NewScanner(os.Stdin)
+	// CLI Loop (context-aware)
+	inputChan := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			inputChan <- scanner.Text()
+		}
+	}()
+
 	for {
 		fmt.Print("> ")
-		if !scanner.Scan() {
-			break
+		select {
+		case <-ctx.Done():
+			slog.Info("CLI: Context cancelled, exiting loop")
+			return
+		case input := <-inputChan:
+			handleCommand(input, c, cancel)
 		}
-		handleCommand(scanner.Text(), c, cancel)
 	}
 }
 
+// handleCommand parses and executes a single CLI or IPC command string.
 func handleCommand(input string, c *engine.Contest, cancel context.CancelFunc) {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -255,7 +290,7 @@ func handleCommand(input string, c *engine.Contest, cancel context.CancelFunc) {
 			if wpm >= 15 && wpm <= 50 {
 				c.MyWpm = wpm
 				c.Keyer.SetWpm(wpm, wpm)
-				fmt.Printf("WPM set to %d\n", wpm)
+				slog.Info("WPM set", "value", wpm)
 			}
 		}
 	case "pileup":
@@ -264,56 +299,59 @@ func handleCommand(input string, c *engine.Contest, cancel context.CancelFunc) {
 			count, _ = strconv.Atoi(parts[1])
 		}
 		c.StartPileup(count)
-		fmt.Printf("Started pile-up with %d stations\n", count)
+		slog.Info("Started pile-up", "count", count)
 	case "noise":
 		if len(parts) > 1 {
 			level, _ := strconv.ParseFloat(parts[1], 64)
 			c.NoiseLevel = level
-			fmt.Printf("Noise level set to %.2f\n", level)
+			slog.Info("Noise level set", "value", level)
 		}
 	case "qrm":
 		if len(parts) > 1 {
 			level, _ := strconv.ParseFloat(parts[1], 64)
 			c.QRMLevel = level
-			fmt.Printf("QRM level set to %.2f\n", level)
+			slog.Info("QRM level set", "value", level)
 		}
 	case "test":
 		if len(parts) > 1 {
 			c.TestTone = (parts[1] == "on")
-			fmt.Printf("Test tone: %v\n", c.TestTone)
+			slog.Info("Test tone updated", "enabled", c.TestTone)
 		}
 	case "pitch":
 		if len(parts) > 1 {
 			pitch, _ := strconv.ParseFloat(parts[1], 64)
 			c.Mixer.Pitch = pitch
-			fmt.Printf("Pitch set to %.0f Hz\n", pitch)
+			slog.Info("Pitch set", "value", pitch)
 		}
 	case "bw":
 		if len(parts) > 1 {
 			bw, _ := strconv.ParseFloat(parts[1], 64)
 			c.Bandwidth = bw
 			c.Mixer.UpdateFilter(bw)
-			fmt.Printf("Bandwidth set to %.0f Hz\n", bw)
+			slog.Info("Bandwidth set", "value", bw)
 		}
 	case "rit":
 		if len(parts) > 1 {
 			rit, _ := strconv.ParseFloat(parts[1], 64)
 			c.RIT = rit
-			fmt.Printf("RIT set to %.0f Hz\n", rit)
+			slog.Info("RIT set", "value", rit)
 		}
 	case "tx":
 		if len(parts) > 1 {
 			msg := strings.Join(parts[1:], " ")
 			c.ProcessUserTX(msg)
-			fmt.Printf("TX: %s\n", msg)
+			slog.Info("TX sent", "msg", msg)
 		}
 	case "score":
-		fmt.Printf("QSOs: %d | Mults: %d | Points: %d | Total Score: %d\n",
-			len(c.Log.Qsos), c.Log.TotalMults(), c.Log.TotalPoints(), c.Log.Score())
+		slog.Info("Current Stats",
+			"qsos", len(c.Log.Qsos),
+			"mults", c.Log.TotalMults(),
+			"points", c.Log.TotalPoints(),
+			"score", c.Log.Score())
 	case "lids":
 		if len(parts) > 1 {
 			c.LIDs = (parts[1] == "on")
-			fmt.Printf("LIDs mode: %v\n", c.LIDs)
+			slog.Info("LIDs mode updated", "enabled", c.LIDs)
 		}
 	case "pota":
 		park := "K-1234"
@@ -321,22 +359,22 @@ func handleCommand(input string, c *engine.Contest, cancel context.CancelFunc) {
 			park = parts[1]
 		}
 		c.Rules = &engine.POTARules{ParkID: park}
-		fmt.Printf("Switched to POTA mode. Park: %s\n", park)
+		slog.Info("Switched to POTA mode", "park", park)
 	case "qsb":
 		if len(parts) > 1 {
 			c.QSBEnabled = (parts[1] == "on")
-			fmt.Printf("QSB (Fading): %v\n", c.QSBEnabled)
+			slog.Info("QSB (Fading) updated", "enabled", c.QSBEnabled)
 		}
 	case "flutter":
 		if len(parts) > 1 {
 			c.FlutterEnabled = (parts[1] == "on")
-			fmt.Printf("Flutter (Aurora): %v\n", c.FlutterEnabled)
+			slog.Info("Flutter (Aurora) updated", "enabled", c.FlutterEnabled)
 		}
 	case "stop":
 		c.Stations = nil
 		c.TestTone = false
-		fmt.Println("Stopped all stations and test tone.")
+		slog.Info("Stopped all stations and test tone")
 	default:
-		fmt.Println("Unknown command.")
+		slog.Warn("Unknown command", "input", input)
 	}
 }

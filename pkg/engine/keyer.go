@@ -99,7 +99,7 @@ func (k *Keyer) Encode(text string) string {
 
 func (k *Keyer) GenerateEnvelope(morse string) []float32 {
 	samplesPerUnit := k.SamplesInUnit()
-	
+
 	// Pre-calculate length
 	totalUnits := 0
 	for _, r := range morse {
@@ -120,14 +120,14 @@ func (k *Keyer) GenerateEnvelope(morse string) []float32 {
 		// Ramp On
 		copy(res[p:], k.RampOn)
 		p += k.RampLen
-		
+
 		// Steady state
 		steadyLen := units*samplesPerUnit - 2*k.RampLen
 		for i := 0; i < steadyLen; i++ {
 			res[p+i] = 1.0
 		}
 		p += steadyLen
-		
+
 		// Ramp Off
 		copy(res[p:], k.RampOff)
 		p += k.RampLen

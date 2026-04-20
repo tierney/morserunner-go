@@ -10,14 +10,14 @@ func TestConfidence(t *testing.T) {
 		input    string
 		expected int
 	}{
-		{"K7ABC", "K7ABC", 100}, // Full match
-		{"K7ABC", "k7abc", 100}, // Case insensitive
-		{"K7ABC", "K7", 40},    // Partial prefix (2/5)
-		{"K7ABC", "ABC", 60},   // Partial suffix (3/5)
-		{"K7ABC", "K7XBC", 80},  // One character error (4/5)
-		{"K7ABC", "XYZ", 0},     // No match
-		{"K7ABC", "", 0},        // Empty input
-		{"W6XYZ", "W6X", 60},    // Substring match
+		{"K7ABC", "K7ABC", 100},  // Full match
+		{"K7ABC", "k7abc", 100},  // Case insensitive
+		{"K7ABC", "K7", 40},      // Partial prefix (2/5)
+		{"K7ABC", "ABC", 60},     // Partial suffix (3/5)
+		{"K7ABC", "K7XBC", 80},   // One character error (4/5)
+		{"K7ABC", "XYZ", 0},      // No match
+		{"K7ABC", "", 0},         // Empty input
+		{"W6XYZ", "W6X", 60},     // Substring match
 		{"K7ABC", "K7ABCDE", 60}, // Input longer than target (penalized)
 	}
 

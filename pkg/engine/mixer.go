@@ -5,13 +5,14 @@ import (
 )
 
 type Mixer struct {
-	Rate       int
-	Pitch      float64
-	Amplitude  float64
-	Phase      float64
-	TwoPi      float64
-	Filter     []float64 // Filter coefficients
-	History    []complex128
+	Rate      int
+	Pitch     float64
+	Amplitude float64
+	Phase     float64
+	TwoPi     float64
+	Bandwidth float64
+	Filter    []float64 // Filter coefficients
+	History   []complex128
 }
 
 func NewMixer(rate int, pitch float64) *Mixer {
@@ -27,6 +28,7 @@ func NewMixer(rate int, pitch float64) *Mixer {
 }
 
 func (m *Mixer) UpdateFilter(bw float64) {
+	m.Bandwidth = bw
 	// Simple moving average or FIR filter coefficients
 	// For now, let's use a 31-tap Sinc filter
 	taps := 31
@@ -74,9 +76,9 @@ func (m *Mixer) Mix(baseband []complex128) []float32 {
 
 // Simple AGC implementation
 type AGC struct {
-	Level    float64
-	Attack   float64
-	Release  float64
+	Level   float64
+	Attack  float64
+	Release float64
 }
 
 func NewAGC() *AGC {

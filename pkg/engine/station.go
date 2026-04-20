@@ -7,29 +7,32 @@ import (
 	"strings"
 )
 
+// StationState represents the current behavioral state of a station.
 type StationState int
 
 const (
-	StListening StationState = iota
-	StCopying
-	StPreparingToSend
-	StSending
+	StListening       StationState = iota // Waiting to hear a CQ or call
+	StCopying                             // Successfully copying a signal
+	StPreparingToSend                     // Calculating response
+	StSending                             // Transmitting CW
 )
 
+// MsgType represents the type of Morse message recognized by the engine.
 type MsgType int
 
 const (
-	MsgNone MsgType = iota
-	MsgCQ
-	MsgNR
-	MsgTU
-	MsgMyCall
-	MsgHisCall
-	MsgB4
-	MsgQm
-	MsgAgn
+	MsgNone    MsgType = iota
+	MsgCQ             // "CQ DE ..."
+	MsgNR             // Exchange/Serial Number
+	MsgTU             // "TU" or "QRZ"
+	MsgMyCall         // Station calling their own call
+	MsgHisCall        // Station calling the user's call
+	MsgB4             // "B4" or "Already Worked"
+	MsgQm             // "?"
+	MsgAgn            // "AGN"
 )
 
+// Station represents a single Morse-code station in the simulation.
 type Station struct {
 	Call      string
 	Amplitude float64
@@ -51,8 +54,8 @@ func NewStation(call string, rate int) *Station {
 		WpmC:      30,
 		State:     StListening,
 		Bfo:       (rand.Float64() - 0.5) * 400.0 * 2.0 * math.Pi / float64(rate), // +/- 200Hz
-		Qsb:       NewQsbModulator(rate, 0.5),                                    // Default slow fading
-		Flutter:   NewQsbModulator(rate, 50.0),                                   // Default fast flutter
+		Qsb:       NewQsbModulator(rate, 0.5),                                     // Default slow fading
+		Flutter:   NewQsbModulator(rate, 50.0),                                    // Default fast flutter
 	}
 }
 
@@ -102,6 +105,18 @@ func (s *Station) Tick(blockSize int) {
 			s.SendPos = 0
 		}
 	}
+
+	// WPM Drift logic (Pascal Expert Audit Finding)
+	if rand.Float64() < 0.001 {
+		drift := (rand.Float64() - 0.5) * 2.0
+		s.WpmS += int(drift)
+		if s.WpmS < 15 {
+			s.WpmS = 15
+		}
+		if s.WpmS > 50 {
+			s.WpmS = 50
+		}
+	}
 }
 
 type OperatorState int
@@ -128,6 +143,7 @@ type Operator struct {
 	HisCall    string
 	Confidence int
 	Location   string
+	IsLid      bool
 }
 
 func NewOperator(station *Station) *Operator {
@@ -139,6 +155,7 @@ func NewOperator(station *Station) *Operator {
 		Patience: 5,
 		MyNR:     rand.Intn(100) + 1,
 		Location: locs[rand.Intn(len(locs))],
+		IsLid:    rand.Float64() < 0.2, // 20% of operators are LIDs
 	}
 }
 
