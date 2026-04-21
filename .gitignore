@@ -1,0 +1,6 @@
+.venv/
+sidecar/benchmark_results.jsonl
+sidecar/benchmark_runs.jsonl
+sidecar/benchmark_summary.json
+morserunner.log
+morserunner-engine

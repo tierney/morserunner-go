@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,24 +25,7 @@ func main() {
 	jsonLogs := flag.Bool("json-logs", false, "Output logs in JSON format")
 	logFile := flag.String("log-file", "morserunner.log", "Path to log file")
 
-	flag.Parse()
-
 	// Initialize structured logging
-	f, err := os.OpenFile(*logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatalf("Failed to open log file: %v", err)
-	}
-	defer f.Close()
-
-	var logHandler slog.Handler
-	if *jsonLogs {
-		logHandler = slog.NewJSONHandler(io.MultiWriter(os.Stderr, f), nil)
-	} else {
-		logHandler = slog.NewTextHandler(io.MultiWriter(os.Stderr, f), nil)
-	}
-	slog.SetDefault(slog.New(logHandler))
-
-	slog.Info("MorseRunner-Go Engine Initializing", "target", "macOS (M4 Pro) / Linux")
 
 	rate := 16000
 	blockSize := 512
@@ -61,6 +43,22 @@ func main() {
 	socketFlag := flag.String("socket", "/tmp/morserunner.sock", "IPC socket path")
 
 	flag.Parse()
+
+	f, err := os.OpenFile(*logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+	defer f.Close()
+
+	var logHandler slog.Handler
+	if *jsonLogs {
+		logHandler = slog.NewJSONHandler(io.MultiWriter(os.Stderr, f), nil)
+	} else {
+		logHandler = slog.NewTextHandler(io.MultiWriter(os.Stderr, f), nil)
+	}
+	slog.SetDefault(slog.New(logHandler))
+
+	slog.Info("MorseRunner-Go Engine Initializing", "target", "macOS (M4 Pro) / Linux")
 
 	driver, err := audio.NewDriver(rate)
 	if err != nil {
@@ -108,7 +106,7 @@ func main() {
 			if v, ok := params["value"]; ok {
 				args = append(args, fmt.Sprintf("%v", v))
 			}
-			
+
 			if err := registry.ExecuteCommand(c, cmd, args); err != nil {
 				slog.Error("Web: Command execution failed", "cmd", cmd, "error", err)
 			} else {
@@ -205,7 +203,10 @@ func main() {
 			select {
 			case <-ctx.Done():
 				return
-			case cmdLine := <-sidecar.CommandChan:
+			case cmdLine, ok := <-sidecar.CommandChan:
+				if !ok {
+					return
+				}
 				if err := registry.Execute(c, cmdLine); err != nil {
 					slog.Error("Sidecar: Command execution failed", "cmd", cmdLine, "error", err)
 				}

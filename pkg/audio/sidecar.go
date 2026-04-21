@@ -2,6 +2,7 @@ package audio
 
 import (
 	"bufio"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -28,7 +29,9 @@ func NewSidecarServer(path string) *SidecarServer {
 func (s *SidecarServer) Start() error {
 	// Remove existing socket if it exists
 	if _, err := os.Stat(s.path); err == nil {
-		os.Remove(s.path)
+		if err := os.Remove(s.path); err != nil {
+			return err
+		}
 	}
 
 	l, err := net.Listen("unix", s.path)
@@ -43,6 +46,9 @@ func (s *SidecarServer) Start() error {
 		for {
 			conn, err := l.Accept()
 			if err != nil {
+				if !errorsIsClosed(err) {
+					slog.Error("Sidecar: accept failed", "error", err)
+				}
 				return
 			}
 			s.addClient(conn)
@@ -71,7 +77,14 @@ func (s *SidecarServer) addClient(conn net.Conn) {
 		scanner := bufio.NewScanner(conn)
 		for scanner.Scan() {
 			cmd := scanner.Text()
-			s.CommandChan <- cmd
+			select {
+			case s.CommandChan <- cmd:
+			default:
+				slog.Warn("Sidecar: command channel full, dropping command", "cmd", cmd)
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			slog.Warn("Sidecar: command read failed", "error", err)
 		}
 	}()
 }
@@ -102,4 +115,18 @@ func (s *SidecarServer) Close() error {
 		return s.listener.Close()
 	}
 	return nil
+}
+
+func errorsIsClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return errors.Is(opErr.Err, net.ErrClosed)
+	}
+	return false
 }
