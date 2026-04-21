@@ -60,9 +60,9 @@ def parse_args() -> argparse.Namespace:
         help="Local MLX model identifier",
     )
     parser.add_argument(
-        "--cloud-model",
+        "--cloud-models",
         default="gemini-1.5-flash",
-        help="Cloud model name",
+        help="Comma-separated list of Gemini models",
     )
     parser.add_argument(
         "--sample-rate",
@@ -133,6 +133,7 @@ def summarize_tier(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "count": len(rows),
         "latency_ms_avg": round(statistics.mean(latencies), 2) if latencies else 0.0,
+        "latency_ms_std": round(statistics.stdev(latencies), 2) if len(latencies) > 1 else 0.0,
         "latency_ms_p50": round(percentile(latencies, 0.5), 2),
         "latency_ms_p95": round(percentile(latencies, 0.95), 2),
         "wer_avg": round(statistics.mean(wers), 4) if wers else 0.0,
@@ -164,12 +165,20 @@ def main() -> None:
     run_cloud = args.tiers in ("cloud", "both")
 
     local_decoder = LocalDecoder(args.local_mode, args.local_model) if run_local else None
-    cloud_decoder = CloudDecoder(args.cloud_model, args.cloud_prompt) if run_cloud else None
+    
+    cloud_decoders = {}
+    if run_cloud:
+        for m in args.cloud_models.split(","):
+            m = m.strip()
+            if m:
+                cloud_decoders[m] = CloudDecoder(m, args.cloud_prompt)
 
     if run_local and not local_decoder.available:
-        raise RuntimeError("Local decoder not available. Install mlx-whisper and retry.")
-    if run_cloud and not cloud_decoder.available:
-        raise RuntimeError("Cloud decoder not available. Set GOOGLE_API_KEY and install google-generativeai.")
+        raise RuntimeError("Local decoder not available.")
+    
+    for name, dec in cloud_decoders.items():
+        if not dec.available:
+            print(f"WARNING: Cloud decoder {name} not available.")
 
     ensure_parent(args.output_jsonl)
     ensure_parent(args.summary_json)
@@ -181,7 +190,14 @@ def main() -> None:
             reference_calls = extract_callsigns(sample.reference)
             reference_call = reference_calls[0] if reference_calls else None
 
-            for tier_name, decoder in (("local", local_decoder), ("cloud", cloud_decoder)):
+            decoders_to_run = []
+            if local_decoder:
+                decoders_to_run.append(("local", local_decoder))
+            for name, dec in cloud_decoders.items():
+                if dec.available:
+                    decoders_to_run.append((name, dec))
+
+            for tier_name, decoder in decoders_to_run:
                 if decoder is None:
                     continue
 
@@ -209,9 +225,12 @@ def main() -> None:
                     f"wer={row['wer']:.4f} cer={row['cer']:.4f} decoded={row['decoded']!r}"
                 )
 
-    by_tier: dict[str, list[dict[str, Any]]] = {"local": [], "cloud": []}
+    by_tier: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        by_tier[row["tier"]].append(row)
+        tier = row["tier"]
+        if tier not in by_tier:
+            by_tier[tier] = []
+        by_tier[tier].append(row)
 
     summary = {
         "manifest": args.manifest,
