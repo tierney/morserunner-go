@@ -1,0 +1,5 @@
+{"id": "clear-30wpm", "wav": "sidecar/benchmarks/samples/clear-30wpm.wav", "reference": "K7ABC"}
+{"id": "noisy-30wpm", "wav": "sidecar/benchmarks/samples/noisy-30wpm.wav", "reference": "W6XYZ"}
+{"id": "qrm-30wpm", "wav": "sidecar/benchmarks/samples/qrm-30wpm.wav", "reference": "N1ABC"}
+{"id": "flutter-30wpm", "wav": "sidecar/benchmarks/samples/flutter-30wpm.wav", "reference": "G4AAA"}
+{"id": "fast-45wpm", "wav": "sidecar/benchmarks/samples/fast-45wpm.wav", "reference": "JA1YAA"}

@@ -4,3 +4,7 @@ sidecar/benchmark_runs.jsonl
 sidecar/benchmark_summary.json
 morserunner.log
 morserunner-engine
+__pycache__/
+sidecar/__pycache__/
+sidecar/benchmarks/samples/
+*.log

@@ -15,6 +15,7 @@ import numpy as np
 
 from benchmarking import BenchmarkLogger
 from benchmarking import extract_callsigns
+from decoders import DeepMorseDecoder
 
 
 @dataclass
@@ -26,7 +27,8 @@ class SidecarConfig:
     strategic_window_seconds: float = 15.0
     strategic_stride_seconds: float = 5.0
     silence_threshold: float = 0.01
-    fast_confirmations: int = 3
+    local_confirmations: int = 2
+    local_decoder_mode: str = "deepmorse"  # "whisper" or "deepmorse"
     local_model: str = "mlx-community/distil-whisper-large-v3"
     cloud_model: str = "gemini-1.5-flash"
     benchmark_path: str = "sidecar/benchmark_results.jsonl"
@@ -79,35 +81,47 @@ class RingBuffer:
 
 
 class LocalDecoder:
-    def __init__(self, model_name: str):
+    def __init__(self, mode: str, model_name: str):
+        self.mode = mode
         self.model_name = model_name
         self.module = None
+        self.deepmorse_decoder = None
         self.available = False
-        try:
-            import mlx_whisper
 
-            self.module = mlx_whisper
+        if mode == "whisper":
+            try:
+                import mlx_whisper
+                self.module = mlx_whisper
+                self.available = True
+            except ImportError:
+                print("mlx-whisper not installed. Falling back to deepmorse.")
+                self.mode = "deepmorse"
+
+        if self.mode == "deepmorse":
+            self.deepmorse_decoder = DeepMorseDecoder()
             self.available = True
-        except ImportError:
-            print("mlx-whisper not installed. Local path disabled.")
 
     def decode(self, audio: np.ndarray, sample_rate: int) -> Optional[str]:
         if not self.available:
             return None
 
         try:
-            result = self.module.transcribe(
-                audio,
-                path_or_hf_repo=self.model_name,
-                language="en",
-            )
-        except Exception as exc:
-            print(f"Local decoder error: {exc}")
-            return None
+            if self.mode == "whisper":
+                result = self.module.transcribe(
+                    audio,
+                    path_or_hf_repo=self.model_name,
+                    language="en",
+                )
+                if isinstance(result, dict):
+                    return str(result.get("text", "")).strip()
+                return str(result).strip()
+            
+            elif self.mode == "deepmorse":
+                return self.deepmorse_decoder.decode(audio, sample_rate)
 
-        if isinstance(result, dict):
-            return str(result.get("text", "")).strip()
-        return str(result).strip()
+        except Exception as exc:
+            print(f"Local decoder error ({self.mode}): {exc}")
+            return None
 
 
 class CloudDecoder:
@@ -172,7 +186,7 @@ class AISidecar:
         self.latest_cloud_text = ""
         self.command_queue = queue.Queue()
         self.benchmarks = BenchmarkLogger(config.benchmark_path)
-        self.local_decoder = LocalDecoder(config.local_model)
+        self.local_decoder = LocalDecoder(config.local_decoder_mode, config.local_model)
         self.cloud_decoder = CloudDecoder(config.cloud_model, config.strategic_prompt)
 
     def connect(self) -> None:
@@ -208,7 +222,7 @@ class AISidecar:
 
         if tier == "fast":
             self.pending_callsigns[call] = self.pending_callsigns.get(call, 0) + 1
-            if self.pending_callsigns[call] < self.config.fast_confirmations:
+            if self.pending_callsigns[call] < self.config.local_confirmations:
                 return
 
         self.confirmed_callsigns.add(call)
@@ -299,6 +313,12 @@ def parse_args() -> SidecarConfig:
     parser = argparse.ArgumentParser(description="MorseRunner-Go AI decoding sidecar")
     parser.add_argument("--socket", default="/tmp/morserunner.sock", help="Unix socket path")
     parser.add_argument(
+        "--local-mode",
+        default="deepmorse",
+        choices=["whisper", "deepmorse"],
+        help="Local decoder mode",
+    )
+    parser.add_argument(
         "--local-model",
         default="mlx-community/distil-whisper-large-v3",
         help="MLX Whisper model identifier",
@@ -316,6 +336,7 @@ def parse_args() -> SidecarConfig:
     args = parser.parse_args()
     return SidecarConfig(
         socket_path=args.socket,
+        local_decoder_mode=args.local_mode,
         local_model=args.local_model,
         cloud_model=args.cloud_model,
         benchmark_path=args.benchmark_path,

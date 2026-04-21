@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
         help="Which decode tiers to benchmark",
     )
     parser.add_argument(
+        "--local-mode",
+        default="deepmorse",
+        choices=["whisper", "deepmorse"],
+        help="Local decoder mode",
+    )
+    parser.add_argument(
         "--local-model",
         default="mlx-community/whisper-tiny-mlx",
         help="Local MLX model identifier",
@@ -157,7 +163,7 @@ def main() -> None:
     run_local = args.tiers in ("local", "both")
     run_cloud = args.tiers in ("cloud", "both")
 
-    local_decoder = LocalDecoder(args.local_model) if run_local else None
+    local_decoder = LocalDecoder(args.local_mode, args.local_model) if run_local else None
     cloud_decoder = CloudDecoder(args.cloud_model, args.cloud_prompt) if run_cloud else None
 
     if run_local and not local_decoder.available:
